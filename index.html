@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reaction Time Experiment</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1"></script>
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #welcome-screen, #summary-screen {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 100vh; background-color: #f0f2f5;
+        }
+        .container {
+            text-align: center; background: white; padding: 2rem; border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1); width: 80%; max-width: 600px;
+        }
+        #task-screen { display: none; background: #fff; cursor: crosshair; }
+        #summary-screen { display: none; overflow-y: auto; }
+        canvas#canvas { display: block; }
+        .chart-container { position: relative; height: 40vh; width: 100%; margin-top: 20px; }
+        button { padding: 12px 24px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 6px; font-size: 1rem; }
+        input { padding: 10px; margin: 10px; border: 1px solid #ccc; border-radius: 4px; width: 200px; }
+    </style>
+</head>
+<body>
+
+    <div id="welcome-screen">
+        <div class="container">
+            <h1>Reaction Time Task</h1>
+            <p>Click the circles as fast as you can. 10 trials total.</p>
+            <input type="text" id="participant-id" placeholder="Participant ID">
+            <br>
+            <button id="start-btn">Start Task</button>
+        </div>
+    </div>
+
+    <div id="task-screen">
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="summary-screen">
+        <div class="container">
+            <h2>Results</h2>
+            <p id="user-stats">Calculating your stats...</p>
+            <div class="chart-container">
+                <canvas id="rtChart"></canvas>
+            </div>
+            <br>
+            <button onclick="location.reload()">Restart</button>
+        </div>
+    </div>
+
+    <script>
+        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbx-HFDe2mEKywBLbmS9r_1flKprd9JYgpoYKeXpNhfgQbwiFMTDzOdiDvrDgjTshqo7fg/exec"; 
+        const TOTAL_TRIALS = 10;
+        const CIRCLE_RADIUS = 50;
+        const DELAY_BETWEEN_TRIALS = 500;
+
+        let participantId = "";
+        let trialsCompleted = 0;
+        let userRTs = [];
+        let startTime = 0;
+        let circleX, circleY;
+
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Start Logic
+        document.getElementById('start-btn').addEventListener('click', () => {
+            participantId = document.getElementById('participant-id').value.trim() || Math.random().toString(36).substring(2, 8).toUpperCase();
+            document.getElementById('welcome-screen').style.display = 'none';
+            document.getElementById('task-screen').style.display = 'block';
+            resizeCanvas();
+            spawnCircle();
+        });
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        function spawnCircle() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            circleX = Math.random() * (canvas.width - CIRCLE_RADIUS * 2) + CIRCLE_RADIUS;
+            circleY = Math.random() * (canvas.height - CIRCLE_RADIUS * 2) + CIRCLE_RADIUS;
+            ctx.beginPath();
+            ctx.arc(circleX, circleY, CIRCLE_RADIUS, 0, Math.PI * 2);
+            ctx.fillStyle = "#ff4757";
+            ctx.fill();
+            startTime = performance.now();
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            const dist = Math.sqrt((e.clientX - circleX)**2 + (e.clientY - circleY)**2);
+            if (dist < CIRCLE_RADIUS) {
+                const rt = Math.round(performance.now() - startTime);
+                userRTs.push(rt);
+                trialsCompleted++;
+                sendData(trialsCompleted, rt);
+                
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                if (trialsCompleted < TOTAL_TRIALS) {
+                    setTimeout(spawnCircle, DELAY_BETWEEN_TRIALS);
+                } else {
+                    showSummary();
+                }
+            }
+        });
+
+        async function sendData(trial, rt) {
+            fetch(WEB_APP_URL, {
+                method: 'POST',
+                mode: 'no-cors',
+                body: JSON.stringify({ Participant_ID: participantId, Trial_Number: trial, Reaction_Time: rt })
+            });
+        }
+
+        async function showSummary() {
+            document.getElementById('task-screen').style.display = 'none';
+            document.getElementById('summary-screen').style.display = 'flex';
+            
+            const userAvg = userRTs.reduce((a, b) => a + b, 0) / userRTs.length;
+            document.getElementById('user-stats').innerText = `Your Average: ${userAvg.toFixed(2)}ms`;
+
+            // Fetch historical data
+            try {
+                const response = await fetch(WEB_APP_URL);
+                const history = await response.json();
+                renderChart(history, userAvg);
+            } catch (e) {
+                console.error("Failed to fetch history", e);
+            }
+        }
+
+        function renderChart(allData, userAvg) {
+            // Simple binning for histogram
+            const binSize = 50;
+            const bins = {};
+            allData.forEach(val => {
+                const bin = Math.floor(val / binSize) * binSize;
+                bins[bin] = (bins[bin] || 0) + 1;
+            });
+
+            const labels = Object.keys(bins).sort((a, b) => a - b);
+            const counts = labels.map(l => bins[l]);
+
+            new Chart(document.getElementById('rtChart'), {
+                type: 'bar',
+                data: {
+                    labels: labels.map(l => `${l}ms`),
+                    datasets: [{
+                        label: 'Community Frequency',
+                        data: counts,
+                        backgroundColor: 'rgba(0, 123, 255, 0.5)'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        annotation: {
+                            annotations: {
+                                line1: {
+                                    type: 'line',
+                                    xMin: labels.indexOf(Math.floor(userAvg / binSize) * binSize).toString(),
+                                    xMax: labels.indexOf(Math.floor(userAvg / binSize) * binSize).toString(),
+                                    borderColor: 'red',
+                                    borderWidth: 4,
+                                    label: {
+                                        display: true,
+                                        content: `You: ${userAvg.toFixed(0)}ms`,
+                                        position: 'start'
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+    </script>
+</body>
+</html>
